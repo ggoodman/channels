@@ -1,0 +1,39 @@
+{
+  "name": "@ggoodman/channels",
+  "version": "0.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "typings": "dist/index.d.ts",
+  "engines": {
+    "node": ">= 12"
+  },
+  "scripts": {
+    "build": "ts-lib-tools build",
+    "build:watch": "ts-lib-tools watch",
+    "docs": "ts-lib-tools docs",
+    "test": "lab -fSv --globals globalThis --leaks --transform ./test/lib/typescript.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ggoodman/channels.git"
+  },
+  "keywords": ["channel", "channels", "csp", "iterator", "stream"],
+  "author": "Geoffrey Goodman",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ggoodman/channels/issues"
+  },
+  "homepage": "https://github.com/ggoodman/channels#readme",
+  "devDependencies": {
+    "@ggoodman/ts-lib-tools": "^0.4.0",
+    "@hapi/code": "^8.0.1",
+    "@hapi/lab": "^22.0.4",
+    "prettier": "^2.0.4",
+    "typescript": "^3.8.3"
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true,
+    "trailingComma": "es5"
+  }
+}
