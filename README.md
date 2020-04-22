@@ -1,6 +1,6 @@
 # Channels
 
-An implementation of a `Channel` primitive that can be used to decouple producers and consumers in concurrent code.
+An implementation of a closable, tailable `Channel` primitive in idiomatic JavaScript that can be used to decouple producers and consumers in concurrent code.
 
 [![npm version](https://badge.fury.io/js/%40ggoodman%2Fchannels.svg)](https://npm.im/%40ggoodman%2Fchannels)
 
@@ -59,7 +59,7 @@ createBat(wiff, waff); // create a bat that will waff wiffs
 waff.put(createBall());
 ```
 
-## Channel design
+## Concepts
 
 ### Writing
 
@@ -83,7 +83,7 @@ To get around this, a Channel may be created with a buffer size. As many message
 
 ### Closing channels
 
-A Channel can be closed, signalling that further calls to `put` should be treaded as exceptions. When a channel is closed, all outstanding Promises for pending writes will resolve with the value `false`.
+A Channel can be closed, signalling that further calls to `put` should be treated as exceptions. When a channel is closed, all outstanding Promises for pending writes will resolve with the value `false`.
 
 > *Note: This means that buffered messages that had been accepted but not consumed will be lost.*
 
@@ -91,114 +91,45 @@ All outstanding, and new iterations consuming the channel will also immediately 
 
 Blocking reads from a channel (such as those waiting for a value to be written to the channel) will resolve to the special `closed` signal.
 
-### `Channel` interface
+### Iterable Promises
+
+Blocking reads from `Channel.read` or `select` return objects having a `IterablePromise` type. This object can act both as a `Promise` or as an `AsyncIterable`.
+
+If you are interested in reading a single message from a Channel, you will probably treat these objects as Promises. Note that since a Channel might already be closed, or might become closed after starting to block on an operation, the `Promise` may resolve to a special `closed` signal.
 
 ```ts
-/**
- * A CSP-style channel.
- *
- * Represents an optionally-buffered unidirectional channel for typed messages.
- */
-export interface Channel<T> {
-  /**
-   * Indication of whether this channel is closed.
-   */
-  readonly closed: boolean;
+const message = await channel.take();
 
-  /**
-   * The number of queued messages in the channel.
-   */
-  readonly size: number;
+if (message === closed) {
+  // Handle case where no message was received since the channel is closed
+  return;
+}
 
-  /**
-   * Closes the channel.
-   *
-   * This immediately causes all pending `Promise`s to resolve
-   * with the `closed` symbol. It will immediately cause all `AsyncIterator`s to
-   * return, skipping further iteration.
-   *
-   * Attempting to call `put` on a closed channel will throw a {@link ChannelClosedError}.
-   * Subsequent calls to {@link Channel.take | take} or {@link select} that include this channel will
-   * immediately resolve / complete iteration.
-   */
-  close(): void;
+// Handle the message
+```
 
-  /**
-   * Write a message to the channel.
-   *
-   * If the channel is closed, a {@link ChannelClosedError} exception will be thrown. If
-   * the channel has a fixed buffer size and this message would cause that buffer to
-   * be exceeded, the message will be discarded and this function will return `false`.
-   *
-   * @param msg The message to write to the channel
-   * @returns A promise for whether the message was accepted or not. This will always be true for
-   * unbuffered channels.
-   */
-  put(msg: T): Promise<boolean>;
+If you are interested in reading a a stream of messages from a Channel, you can leverage the JavaScript `for..await..of` construct:
 
-  /**
-   * Waits for a message (or `AsyncIterable` therefor).
-   *
-   * This is the method that a consumer will be calling to obtain a value (or stream
-   * thereof) from the {@link Channel}.
-   *
-   * When the channel is _closed_ and this method's return value is used as a `Promise`,
-   * the returned promise will resolve to the {@link closed} symbol. When the channel
-   * is _closed_ and this method's return value is used as an `AsyncIterable`, the
-   * iterable will not produce any values and will immediately 'return'.
-   *
-   * @returns An {@link IterablePromise}, so the return value can either be used as a
-   * `Promise` or as an `AsyncIterable`.
-   */
-  take(): IterablePromise<TakeValue<T>, T>;
+```ts
+for await (const message of channel.take()) {
+  // Operate on each message
 }
 ```
 
-### `IterablePromise` type
+## API
 
-```ts
-/**
- * A `Promise` that is also an `AsyncIterable`.
- *
- * This is a utility type to represent objects that can be used both as a `Promise`
- * or as an `AsyncIterable`.
- *
- * @template T The message type that will resolve when used as a `Promise`.
- * @template U The message type that will be produced when used as an `AsyncIterable`.
- */
-export type IterablePromise<T, U = T> = Promise<T> & AsyncIterable<U>;
-```
+### `Channel`
 
-#### Used for blocking reads
+An interface representing a Channel, having the following properties:
 
-```ts
-import { channel, closed } from '@ggoodman/channels';
+- `readonly closed: boolean` a property signalling whether the Channel is closed
+- `readonly size: number` a readonly property indicating the total number of pending messages in the channel (buffered or otherwise).
+- `close(): void` close the channel.
+- `put(msg: unknown): Promise<boolean>` write a message to the channel. The returned Promise will resolve to `true` if the message was consumed (or was buffered). It may resolve to `false` if the channel was closed before the message could be read.
 
-const ch = channel();
+### `channel<T>(bufferSize?: number): Channel<T>`
 
-const msg = await ch.take(); // Use the value as a promise
-
-if (msg === closed) {
-  // Ignore this?
-}
-
-// Do something with msg
-```
-
-#### Used for asynchronous iteration
-```ts
-import { channel } from '@ggoodman/channels';
-
-const ch = channel();
-
-for await (const msg of ch.take()) {
-  // Do something with msg
-}
-```
-
-### `channel(bufferSize?: number): Channel`
-
-Create a new Channel with an optional buffer size.
+Create a new Channel that will, optionally, buffer up to `bufferSize` messages. Returns a `Channel` instance.
 
 ### `closed: unique symbol`
 
