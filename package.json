@@ -1,6 +1,6 @@
 {
   "name": "@ggoodman/channels",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "",
   "main": "dist/index.js",
   "typings": "dist/index.d.ts",
@@ -17,7 +17,13 @@
     "type": "git",
     "url": "git+https://github.com/ggoodman/channels.git"
   },
-  "keywords": ["channel", "channels", "csp", "iterator", "stream"],
+  "keywords": [
+    "channel",
+    "channels",
+    "csp",
+    "iterator",
+    "stream"
+  ],
   "author": "Geoffrey Goodman",
   "license": "MIT",
   "bugs": {
