@@ -1,6 +1,6 @@
-import { Channel, closed, IterablePromise, IterableValue } from './channel';
+import { Channel, closed, IterablePromise } from './channel';
 import { Queue } from './queue';
-import { ChannelClosedError } from './error';
+import { ChannelClosedError, ChannelOverflowError } from './error';
 
 /**
  * @hidden
@@ -10,7 +10,7 @@ type ChannelMessage<T> = T extends Channel<infer U> ? U : never;
 /**
  * @hidden
  */
-type SelectResult<TChannels extends { [key: string]: Channel<any> }> = {
+type SelectResult<TChannels extends Record<string, Channel<any>>> = {
   [TKey in keyof TChannels]: {
     key: TKey;
     value: TakeValue<ChannelMessage<TChannels[TKey]>>;
@@ -20,17 +20,7 @@ type SelectResult<TChannels extends { [key: string]: Channel<any> }> = {
 /**
  * @hidden
  */
-type SelectIteratorResult<TChannels extends { [key: string]: Channel<any> }> = {
-  [TKey in keyof TChannels]: {
-    key: TKey;
-    value: ChannelMessage<TChannels[TKey]>;
-  };
-}[keyof TChannels];
-
-/**
- * @hidden
- */
-type SelectSyncResult<TChannels extends { [key: string]: Channel<any> }> = {
+type SelectIteratorResult<TChannels extends Record<string, Channel<any>>> = {
   [TKey in keyof TChannels]: {
     key: TKey;
     value: ChannelMessage<TChannels[TKey]>;
@@ -43,25 +33,36 @@ type SelectSyncResult<TChannels extends { [key: string]: Channel<any> }> = {
 export type TakeValue<T> = T | closed;
 
 const resolvedTrue = Promise.resolve(true);
-const resolvedFalse = Promise.resolve(false);
+
+const kBufferSize = Symbol('Channel#bufferSize');
+const kClosed = Symbol('Channel#closed');
+const kMessageQueue = Symbol('Channel#messageQueue');
+const kReadQueue = Symbol('Channel#readQueue');
+const kRead = Symbol('Channel#read');
+const kSelect = Symbol('Channel.select');
+const kTake = Symbol('Channel#take');
+
+let totalOrder = 0;
 
 export class ChannelImpl<T> implements Channel<T> {
-  #bufferSize: number;
-  #closed = false;
-  readonly #messageQueue = new Queue<{ msg: T; pubCb?: (didPut: boolean) => void }>();
-  readonly #takersQueue = new Queue<(msg: TakeValue<T>) => void>();
-  readonly #racersQueue = new Queue<(ch: ChannelImpl<T>) => void>();
+  private [kBufferSize]: number;
+  private [kClosed] = false;
+
+  /** @hidden */
+  readonly [kMessageQueue] = new Queue<{ msg: T; putCb?: (didPut: boolean) => void; ts: number }>();
+  /** @hidden */
+  readonly [kReadQueue] = new Queue<(msg: TakeValue<T>) => void>();
 
   constructor(bufferSize = 0) {
-    this.#bufferSize = bufferSize;
+    this[kBufferSize] = bufferSize;
   }
 
   get closed() {
-    return this.#closed;
+    return this[kClosed];
   }
 
   get size() {
-    return this.#messageQueue.size;
+    return this[kMessageQueue].size;
   }
 
   async *[Symbol.asyncIterator]() {
@@ -76,85 +77,73 @@ export class ChannelImpl<T> implements Channel<T> {
     }
   }
 
-  *[Symbol.iterator]() {
-    while (this.size) {
-      yield this.read()!;
-    }
-  }
-
   close() {
-    if (this.#closed) {
-      throw new TypeError('Impossible to close a closed channel');
+    if (this[kClosed]) {
+      throw new ChannelClosedError();
     }
 
-    this.#closed = true;
+    this[kClosed] = true;
 
-    while (this.#takersQueue.size) {
-      const takerCb = this.#takersQueue.pop()!;
+    while (this[kReadQueue].size) {
+      const reader = this[kReadQueue].pop()!;
 
-      takerCb(closed);
+      reader(closed);
     }
 
-    while (this.#racersQueue.size) {
-      const racerCb = this.#racersQueue.pop()!;
+    while (this[kMessageQueue].size) {
+      const { putCb } = this[kMessageQueue].pop()!;
 
-      racerCb(this);
+      if (putCb) {
+        putCb(false);
+      }
     }
   }
 
   put(msg: T): Promise<boolean> {
-    if (this.#closed) {
+    if (this[kClosed]) {
       throw new ChannelClosedError();
     }
 
-    // We have a taker waiting, short-circuit
-    // the queues
-    const taker = this.#takersQueue.pop();
-    if (taker) {
-      taker(msg);
+    const ts = totalOrder++;
+    const reader = this[kReadQueue].pop();
 
-      return resolvedTrue;
-    }
-
-    // This message can be safely buffered and we can immediately ACK it
-    if (this.#messageQueue.size < this.#bufferSize) {
-      this.#messageQueue.push({ msg });
+    if (reader) {
+      reader(msg);
 
       return resolvedTrue;
     }
 
     return new Promise((resolve) => {
-      if (!this.#messageQueue.push({ msg, pubCb: resolve })) {
+      if (!this[kMessageQueue].push({ msg, putCb: resolve, ts })) {
         // The internal message queue is full
-        return resolvedFalse;
+        return resolve(false);
       }
 
-      const racer = this.#racersQueue.pop();
-      if (racer) {
-        racer(this);
+      if (this[kMessageQueue].size <= this[kBufferSize]) {
+        resolve(true);
       }
     });
   }
 
-  read(): T | undefined {
-    if (this.#closed) {
+  private [kRead](): T | undefined {
+    if (this[kClosed]) {
       return;
     }
 
-    const pendingMsg = this.#messageQueue.pop();
+    const pendingMsg = this[kMessageQueue].pop();
     if (!pendingMsg) {
       return;
     }
 
-    if (pendingMsg.pubCb) {
-      pendingMsg.pubCb(true);
+    if (pendingMsg.putCb) {
+      pendingMsg.putCb(true);
     }
 
     return pendingMsg.msg;
   }
 
   take(): IterablePromise<TakeValue<T>, T> {
-    const took = this._take();
+    const took = this[kTake]();
     const self = this;
 
     return Object.assign(isPromise(took) ? took : Promise.resolve(took), {
@@ -168,7 +157,7 @@ export class ChannelImpl<T> implements Channel<T> {
         yield result;
 
         while (true) {
-          const took = self._take();
+          const took = self[kTake]();
           const result = isPromise(took) ? await took : took;
 
           if (result === closed) {
@@ -181,35 +170,32 @@ export class ChannelImpl<T> implements Channel<T> {
     });
   }
 
-  private _race(): Promise<ChannelImpl<T>> | ChannelImpl<T> {
-    if (this.size) {
-      return this;
-    }
-
-    return new Promise<ChannelImpl<T>>((resolve) => {
-      this.#racersQueue.push(resolve);
-    });
-  }
-
-  private _take(): Promise<TakeValue<T>> | TakeValue<T> {
-    if (this.#closed) {
+  private [kTake](): TakeValue<T> | (Promise<TakeValue<T>> & { dispose(): void }) {
+    if (this[kClosed]) {
       return closed;
     }
 
     if (this.size) {
-      return this.read()!;
+      return this[kRead]()!;
     }
 
-    return new Promise((resolve) => {
-      this.#takersQueue.push(resolve);
+    let dispose: (() => void) | false;
+    const promise = new Promise<TakeValue<T>>((resolve) => {
+      dispose = this[kReadQueue].push(resolve);
+
+      if (!dispose) {
+        return resolve(Promise.reject(new ChannelOverflowError()));
+      }
     });
+
+    return Object.assign(promise, { dispose: dispose! as () => void });
   }
 
   static select<TChannels extends { [key: string]: Channel<any> }>(
     chs: TChannels
   ): IterablePromise<SelectResult<TChannels>, SelectIteratorResult<TChannels>> {
     const typedChs = (chs as unknown) as { [key: string]: ChannelImpl<any> };
-    const selectResult = this._select(typedChs);
+    const selectResult = this[kSelect](typedChs);
 
     return Object.assign(isPromise(selectResult) ? selectResult : Promise.resolve(selectResult), {
       async *[Symbol.asyncIterator]() {
@@ -222,7 +208,7 @@ export class ChannelImpl<T> implements Channel<T> {
         yield result as SelectIteratorResult<TChannels>;
 
         while (true) {
-          const selectResult = ChannelImpl._select(typedChs);
+          const selectResult = ChannelImpl[kSelect](typedChs);
           const result = isPromise(selectResult) ? await selectResult : selectResult;
 
           if (result.value === closed) {
@@ -235,118 +221,71 @@ export class ChannelImpl<T> implements Channel<T> {
     });
   }
 
-  public static selectSync<TChannels extends { [key: string]: Channel<any> }>(
-    chs: TChannels
-  ): IterableValue<SelectSyncResult<TChannels>> {
-    const typedChs = (chs as unknown) as { [key: string]: ChannelImpl<any> };
-    const selectResult = this._selectSync(typedChs);
-    const self = this;
-
-    return Object.assign(selectResult, {
-      *[Symbol.iterator]() {
-        if (!selectResult) {
-          return;
-        }
-
-        yield selectResult as SelectSyncResult<TChannels>;
-
-        while (true) {
-          const selectResult = self._selectSync(typedChs);
-
-          if (!selectResult) {
-            return;
-          }
-
-          yield selectResult as SelectSyncResult<TChannels>;
-        }
-      },
-    });
-  }
-
-  private static _select<TChannels extends { [key: string]: ChannelImpl<unknown> }>(
+  private static [kSelect]<TChannels extends Record<string, ChannelImpl<unknown>>>(
     chs: TChannels
   ): Promise<SelectResult<TChannels>> | SelectResult<TChannels> {
-    const racers = [] as Array<Promise<[keyof TChannels, TChannels[keyof TChannels]]>>;
+    let oldestTes = Number.POSITIVE_INFINITY;
+    let oldestCh: { key: string; ch: ChannelImpl<unknown> } | null = null;
+    let hadChannel = false;
 
     for (const key in chs) {
       const ch = chs[key];
-      const raceResult = ch._race();
-      let racePromise;
 
-      if (!isPromise(raceResult)) {
-        if (ch.#closed) {
-          return { key, value: closed } as SelectResult<TChannels>;
-        }
-
-        const pending = ch.#messageQueue.pop();
-
-        if (pending) {
-          if (pending.pubCb) {
-            pending.pubCb(true);
-          }
-
-          return { key, value: pending.msg } as SelectResult<TChannels>;
-        }
-
-        racePromise = Promise.resolve(raceResult);
-      } else {
-        racePromise = raceResult;
-      }
-
-      racers.push(racePromise.then(() => [key, ch]));
-    }
-
-    if (!racers.length) {
-      throw new TypeError('At least one channel mapping must be provided to select');
-    }
-
-    return Promise.race(racers).then(([key, ch]) => {
-      for (const k in chs) {
-        const cmp = chs[k];
-
-        if (cmp !== ch) {
-          chs[k].#racersQueue.pop();
-        }
-      }
-
-      if (ch.#closed) {
+      if (ch.closed) {
         return { key, value: closed } as SelectResult<TChannels>;
       }
 
-      const pending = ch.#messageQueue.pop();
+      hadChannel = true;
 
-      if (!pending) {
-        throw new Error('Invariant violation: Channel race settled without any queued messages');
+      const msg = ch[kMessageQueue].peek();
+
+      if (msg && msg.ts < oldestTes) {
+        oldestCh = { key, ch };
+        oldestTes = msg.ts;
+      }
+    }
+
+    if (oldestCh) {
+      const msg = oldestCh.ch[kMessageQueue].pop()!;
+
+      if (msg.putCb) {
+        msg.putCb(true);
       }
 
-      if (pending.pubCb) {
-        pending.pubCb(true);
-      }
+      return { key: oldestCh.key, value: msg.msg } as SelectResult<TChannels>;
+    }
 
-      return { key, value: pending.msg } as SelectResult<TChannels>;
+    if (!hadChannel) {
+      throw new TypeError(
+        'Calls to select must be objects with string keys mapping to channels, having at least one record'
+      );
+    }
+
+    // There are no _pending_ messages to immediately resolve the race. Let's register some
+    // callbacks.
+    return new Promise((resolve) => {
+      const disposeFns = [] as Array<() => void>;
+      for (const key in chs) {
+        const ch = chs[key];
+        const cb = (value: unknown) => {
+          for (const disposeFn of disposeFns) {
+            if (disposeFn !== dispose) {
+              disposeFn();
+            }
+          }
+
+          return resolve({ key, value } as SelectResult<TChannels>);
+        };
+
+        const dispose = ch[kReadQueue].push(cb);
+
+        if (!dispose) {
+          return resolve(Promise.reject(new ChannelOverflowError()));
+        }
+
+        disposeFns.push(dispose);
+      }
     });
-  }
-
-  private static _selectSync<TChannels extends { [key: string]: ChannelImpl<unknown> }>(
-    chs: TChannels
-  ): SelectSyncResult<TChannels> | undefined {
-    let count = 0;
-    for (const key in chs) {
-      const ch = chs[key as keyof TChannels];
-      const value = ch.read();
-
-      if (value) {
-        return { key, value } as any;
-      }
-
-      count++;
-    }
-
-    if (!count) {
-      throw new TypeError('At least one channel mapping must be provided to select');
-    }
-
-    return;
   }
 }
 

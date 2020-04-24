@@ -1,26 +1,38 @@
+const kItems = Symbol('Queue.items');
+const kMaxSize = Symbol('Queue.maxSize');
 export class Queue<T> {
-  #items = [] as T[];
-  #maxSize: number;
+  [kItems] = [] as T[];
+  [kMaxSize]: number;
 
   constructor(maxSize = Number.MAX_SAFE_INTEGER) {
-    this.#maxSize = maxSize;
+    this[kMaxSize] = maxSize;
   }
 
   get size() {
-    return this.#items.length;
+    return this[kItems].length;
+  }
+
+  peek() {
+    return this[kItems].length ? this[kItems][this[kItems].length - 1] : undefined;
   }
 
   pop() {
-    return this.#items.pop();
+    return this[kItems].pop();
   }
 
-  push(item: T) {
-    if (this.size >= this.#maxSize) {
+  push(item: T): false | (() => void) {
+    if (this.size >= this[kMaxSize]) {
       return false;
     }
 
-    this.#items.unshift(item);
+    this[kItems].unshift(item);
 
-    return true;
+    return () => {
+      const idx = this[kItems].indexOf(item);
+
+      if (idx >= 0) {
+        this[kItems].splice(idx, 1);
+      }
+    };
   }
 }

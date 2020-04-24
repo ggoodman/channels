@@ -4,3 +4,10 @@ export class ChannelClosedError extends Error {
     this.name = this.constructor.name;
   }
 }
+
+export class ChannelOverflowError extends RangeError {
+  constructor() {
+    super('Channel overflowed');
+    this.name = this.constructor.name;
+  }
+}

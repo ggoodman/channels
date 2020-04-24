@@ -34,7 +34,7 @@
     "@ggoodman/ts-lib-tools": "^0.4.0",
     "@hapi/code": "^8.0.1",
     "@hapi/lab": "^22.0.4",
-    "prettier": "^2.0.4",
+    "prettier": "^2.0.5",
     "typescript": "^3.8.3"
   },
   "prettier": {

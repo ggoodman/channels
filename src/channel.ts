@@ -37,7 +37,7 @@ import { TakeValue, ChannelImpl } from './channelImpl';
  */
 export type IterablePromise<T, U = T> = Promise<T> & AsyncIterable<U>;
 
-export type IterableValue<T, U = T> = T & Iterable<U>;
+// export type IterableValue<T, U = T> = T & Iterable<U>;
 
 export const closed = Symbol('channel.closed');
 export type closed = typeof closed;
@@ -101,7 +101,7 @@ export type closed = typeof closed;
  *
  * @typeParam T The type of values that will be produced by the channel
  */
-export interface Channel<T> extends Iterable<T> {
+export interface Channel<T> {
   /**
    * Indication of whether this channel is closed.
    */
@@ -138,7 +138,7 @@ export interface Channel<T> extends Iterable<T> {
    */
   put(msg: T): Promise<boolean>;
 
-  read(): T | undefined;
+  // read(): T | undefined;
 
   /**
    * Waits for a message (or `AsyncIterable` therefor).
@@ -161,10 +161,10 @@ export interface Channel<T> extends Iterable<T> {
    */
   [Symbol.asyncIterator](): AsyncIterator<T>;
 
-  /**
-   * @ignore
-   */
-  [Symbol.iterator](): Iterator<T>;
+  // /**
+  //  * @ignore
+  //  */
+  // [Symbol.iterator](): Iterator<T>;
 }
 
 export function channel<T>(size?: number): Channel<T> {
@@ -179,8 +179,4 @@ export function channel<T>(size?: number): Channel<T> {
 
 export function select<TChannels extends { [key: string]: Channel<any> }>(chs: TChannels) {
   return ChannelImpl.select(chs);
-}
-
-export function selectSync<TChannels extends { [key: string]: Channel<any> }>(chs: TChannels) {
-  return ChannelImpl.selectSync(chs);
 }
